@@ -18,16 +18,18 @@ import (
 
 	"whatsapp-h2h-otomax/internal/config"
 	"whatsapp-h2h-otomax/internal/model"
+	"whatsapp-h2h-otomax/internal/repository"
 	"whatsapp-h2h-otomax/pkg/logger"
 )
 
 // WhatsAppService handles WhatsApp operations
 type WhatsAppService struct {
-	client         *whatsmeow.Client
-	container      *sqlstore.Container
-	logger         *logger.Logger
-	otomaxService  *OtomaxService
-	messageTracker *MessageTracker
+	client            *whatsmeow.Client
+	container         *sqlstore.Container
+	logger            *logger.Logger
+	otomaxService     *OtomaxService
+	repo              *repository.TransactionRepository
+	webhookWhitelist  []string
 }
 
 // NewWhatsAppService creates a new WhatsApp service
@@ -71,9 +73,14 @@ func (s *WhatsAppService) SetOtomaxService(otomaxService *OtomaxService) {
 	s.otomaxService = otomaxService
 }
 
-// SetMessageTracker sets the message tracker
-func (s *WhatsAppService) SetMessageTracker(tracker *MessageTracker) {
-	s.messageTracker = tracker
+// SetTransactionRepository sets the transaction repository for tracking
+func (s *WhatsAppService) SetTransactionRepository(repo *repository.TransactionRepository) {
+	s.repo = repo
+}
+
+// SetWebhookWhitelist sets the whitelist of JIDs/Groups allowed for webhook
+func (s *WhatsAppService) SetWebhookWhitelist(whitelist []string) {
+	s.webhookWhitelist = whitelist
 }
 
 // Connect connects to WhatsApp
@@ -375,13 +382,29 @@ func (s *WhatsAppService) handleIncomingMessage(evt *events.Message) {
 		return
 	}
 
-	// Get tracking info for this chat
-	if s.messageTracker == nil {
+	// Check if repository is set
+	if s.repo == nil {
 		return
 	}
 
-	trackingInfo := s.messageTracker.GetByChat(evt.Info.Chat.String())
-	if trackingInfo == nil {
+	// Check whitelist if configured
+	chatJID := evt.Info.Chat.String()
+	if len(s.webhookWhitelist) > 0 {
+		if !s.isWhitelisted(chatJID) {
+			s.logger.Info("Message from non-whitelisted JID ignored",
+				"jid", chatJID,
+			)
+			return
+		}
+	}
+
+	// Get tracking info for this chat from database
+	trackingRecord, err := s.repo.GetByDestination(chatJID)
+	if err != nil {
+		s.logger.Error("Failed to get tracking info", "error", err, "jid", chatJID)
+		return
+	}
+	if trackingRecord == nil {
 		// Not related to any tracked transaction
 		return
 	}
@@ -409,9 +432,9 @@ func (s *WhatsAppService) handleIncomingMessage(evt *events.Message) {
 			Timestamp: evt.Info.Timestamp,
 		},
 		Context: model.MessageContext{
-			ChatType:          trackingInfo.DestinationType,
+			ChatType:          trackingRecord.DestinationType,
 			IsReply:           false,
-			OriginalMessageID: trackingInfo.MessageID,
+			OriginalMessageID: trackingRecord.MessageID,
 		},
 	}
 
@@ -441,9 +464,9 @@ func (s *WhatsAppService) handleIncomingMessage(evt *events.Message) {
 	// Send to Otomax webhook
 	if s.otomaxService != nil {
 		ctx := context.Background()
-		err := s.otomaxService.SendWebhook(ctx, payload, trackingInfo.TrxID)
+		err := s.otomaxService.SendWebhook(ctx, payload, trackingRecord.TrxID)
 		if err != nil {
-			s.logger.WithTrxID(trackingInfo.TrxID).Error("Failed to send webhook",
+			s.logger.WithTrxID(trackingRecord.TrxID).Error("Failed to send webhook",
 				"error", err,
 				"from", evt.Info.Sender.User,
 			)
@@ -451,11 +474,21 @@ func (s *WhatsAppService) handleIncomingMessage(evt *events.Message) {
 		}
 		
 		// Log successful webhook delivery
-		s.logger.WithTrxID(trackingInfo.TrxID).Info("Message received and forwarded to webhook",
+		s.logger.WithTrxID(trackingRecord.TrxID).Info("Message received and forwarded to webhook",
 			"from", evt.Info.Sender.User,
 			"message", messageContent,
 		)
 	}
+}
+
+// isWhitelisted checks if JID is in whitelist
+func (s *WhatsAppService) isWhitelisted(jid string) bool {
+	for _, whitelisted := range s.webhookWhitelist {
+		if whitelisted == jid {
+			return true
+		}
+	}
+	return false
 }
 
 // GetConnectionStatus returns connection status information

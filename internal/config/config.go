@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -50,7 +51,9 @@ type RateLimitConfig struct {
 
 // MessageTrackingConfig holds message tracking configuration
 type MessageTrackingConfig struct {
-	TTL time.Duration
+	TTL              time.Duration
+	TrackingDBPath   string
+	WebhookWhitelist []string
 }
 
 // Load loads configuration from environment variables
@@ -79,7 +82,9 @@ func Load() (*Config, error) {
 			MaxMessagesPerSecond: parseInt(getEnv("MAX_MESSAGES_PER_SECOND", "5"), 5),
 		},
 		MessageTracking: MessageTrackingConfig{
-			TTL: parseDuration(getEnv("MESSAGE_TRACKING_TTL", "24h"), 24*time.Hour),
+			TTL:              parseDuration(getEnv("MESSAGE_TRACKING_TTL", "24h"), 24*time.Hour),
+			TrackingDBPath:   getEnv("TRACKING_DB_PATH", "./db/tracking.db"),
+			WebhookWhitelist: parseStringList(getEnv("WEBHOOK_WHITELIST_JIDS", "")),
 		},
 	}
 
@@ -122,5 +127,21 @@ func parseDuration(value string, defaultValue time.Duration) time.Duration {
 		return defaultValue
 	}
 	return duration
+}
+
+// parseStringList parses comma-separated string to slice
+func parseStringList(value string) []string {
+	if value == "" {
+		return []string{}
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 

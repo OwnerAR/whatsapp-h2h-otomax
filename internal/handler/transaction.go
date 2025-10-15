@@ -43,21 +43,8 @@ func (h *TransactionHandler) ForwardTransaction(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Check if transaction with same TrxID already exists
-	existingTrx := h.transactionService.GetMessageTracker().GetByTrxID(trxID)
-	if existingTrx != nil {
-		h.logger.WithTrxID(trxID).Warn("Duplicate transaction detected",
-			"existing_message_id", existingTrx.MessageID,
-			"existing_destination", existingTrx.Destination,
-			"tracker_count", h.transactionService.GetMessageTracker().Count(),
-		)
-		h.sendErrorResponse(w, "ERR_DUPLICATE_TRANSACTION", "Transaction with this TrxID already exists and is still being tracked", http.StatusConflict)
-		return
-	}
-	
 	h.logger.WithTrxID(trxID).Info("New transaction request", 
 		"destination", destination,
-		"tracker_count", h.transactionService.GetMessageTracker().Count(),
 	)
 
 	// Create request model
@@ -71,6 +58,13 @@ func (h *TransactionHandler) ForwardTransaction(w http.ResponseWriter, r *http.R
 	// Process transaction
 	data, err := h.transactionService.ProcessTransaction(r.Context(), req)
 	if err != nil {
+		// Check for duplicate error
+		if contains(err.Error(), "duplicate transaction") {
+			h.logger.WithTrxID(trxID).Warn("Duplicate transaction detected", "error", err)
+			h.sendErrorResponse(w, "ERR_DUPLICATE_TRANSACTION", err.Error(), http.StatusConflict)
+			return
+		}
+		
 		h.logger.WithTrxID(trxID).Error("Failed to process transaction",
 			"error", err,
 			"destination", destination,

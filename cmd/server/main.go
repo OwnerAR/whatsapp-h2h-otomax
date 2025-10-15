@@ -47,11 +47,17 @@ func main() {
 	otomaxService := service.NewOtomaxService(&cfg.Otomax, appLogger)
 
 	// Initialize transaction service
-	transactionService := service.NewTransactionService(whatsappService, &cfg.MessageTracking, appLogger)
+	transactionService, err := service.NewTransactionService(whatsappService, &cfg.MessageTracking, appLogger)
+	if err != nil {
+		appLogger.Error("Failed to initialize transaction service", "error", err)
+		log.Fatalf("Failed to initialize transaction service: %v", err)
+	}
+	defer transactionService.Close()
 
 	// Set dependencies
 	whatsappService.SetOtomaxService(otomaxService)
-	whatsappService.SetMessageTracker(transactionService.GetMessageTracker())
+	whatsappService.SetTransactionRepository(transactionService.GetRepository())
+	whatsappService.SetWebhookWhitelist(cfg.MessageTracking.WebhookWhitelist)
 
 	// Connect to WhatsApp
 	err = whatsappService.Connect()
